@@ -729,4 +729,442 @@ def main():
         with st.spinner("Performing clustering analysis..."):
             clustered_data, cluster_info = perform_clustering_analysis(master_data, n_clusters)
         
-        if clustered_
+        if clustered_data is not None:
+            st.success(f"✓ Clustering complete | Silhouette Score: {cluster_info['silhouette']:.3f}")
+            
+            # Cluster visualization
+            fig = px.scatter(
+                clustered_data,
+                x='eviction_rate',
+                y='snap_households',
+                color='cluster',
+                size='need_score',
+                hover_data=['Borough', 'Tract'],
+                title=f'{n_clusters} Distinct Crisis Clusters Identified',
+                labels={'cluster': 'Cluster ID'}
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Cluster profiles
+            st.subheader("Cluster Profiles & Intervention Strategies")
+            
+            for cluster_id in range(n_clusters):
+                with st.expander(f"Cluster {cluster_id} - {cluster_info['counts'][cluster_id]} tracts"):
+                    profile = cluster_info['profiles'].loc[cluster_id]
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("**Profile Metrics:**")
+                        for metric, value in profile.items():
+                            st.metric(metric.replace('_', ' ').title(), f"{value:.1f}")
+                    
+                    with col2:
+                        # Intervention recommendation
+                        if profile['eviction_rate'] > 80:
+                            priority = "🔴 CRITICAL"
+                            strategy = "Emergency housing stabilization + legal aid"
+                        elif profile['snap_households'] > 400:
+                            priority = "🟠 HIGH"
+                            strategy = "Food security + employment support"
+                        else:
+                            priority = "🟡 MODERATE"
+                            strategy = "Preventive services + job training"
+                        
+                        st.markdown(f"**Priority Level:** {priority}")
+                        st.markdown(f"**Recommended Strategy:** {strategy}")
+        else:
+            st.error("Unable to perform clustering analysis - insufficient data")
+    
+    # ========================================================================
+    # PAGE 5: MULTI-CRITERIA PRIORITIZATION
+    # ========================================================================
+    
+    elif page == "🎯 Multi-Criteria Prioritization":
+        st.header("Multi-Criteria Decision Analysis")
+        
+        st.markdown("""
+        Customize weighting of different crisis factors to generate personalized expansion priorities.
+        """)
+        
+        # Weight customization
+        st.subheader("Customize Priority Weights")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            w_eviction = st.slider("Eviction Weight", 0, 100, 35) / 100
+        with col2:
+            w_snap = st.slider("SNAP Weight", 0, 100, 25) / 100
+        with col3:
+            w_poverty = st.slider("Poverty Weight", 0, 100, 20) / 100
+        with col4:
+            w_unemploy = st.slider("Unemployment Weight", 0, 100, 20) / 100
+        
+        total_weight = w_eviction + w_snap + w_poverty + w_unemploy
+        
+        if abs(total_weight - 1.0) > 0.01:
+            st.warning(f"⚠️ Weights sum to {total_weight:.2f} - normalizing to 1.0")
+            w_eviction /= total_weight
+            w_snap /= total_weight
+            w_poverty /= total_weight
+            w_unemploy /= total_weight
+        
+        # Apply weights
+        weights = {
+            'eviction_rate': w_eviction,
+            'snap_households': w_snap,
+            'poverty_rate_num': w_poverty,
+            'unemployed': w_unemploy
+        }
+        
+        prioritized = prioritize_tracts_multi_criteria(master_data, weights)
+        
+        # Display results
+        st.subheader("Top 30 Priority Tracts (Custom Weighted)")
+        
+        top_30 = prioritized.head(30)[
+            ['Borough', 'Tract', 'eviction_rate', 'snap_households', 
+             'poverty_rate_num', 'priority_score', 'priority_rank']
+        ].round(2)
+        
+        st.dataframe(
+            top_30.style.background_gradient(subset=['priority_score'], cmap='RdYlGn_r'),
+            use_container_width=True,
+            height=600
+        )
+        
+        # Download results
+        csv = top_30.to_csv(index=False)
+        st.download_button(
+            label="📥 Download Priority List",
+            data=csv,
+            file_name="ohff_expansion_priorities.csv",
+            mime="text/csv"
+        )
+    
+    # ========================================================================
+    # PAGE 6: ROI CALCULATOR
+    # ========================================================================
+    
+    elif page == "📈 ROI Calculator":
+        st.header("Return on Investment Calculator")
+        
+        st.markdown("""
+        Calculate projected ROI for different expansion scenarios with detailed financial modeling.
+        """)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Input Parameters")
+            
+            investment_amount = st.number_input(
+                "Total Investment ($)",
+                min_value=100000,
+                max_value=5000000,
+                value=500000,
+                step=50000
+            )
+            
+            survivors_served = st.number_input(
+                "Survivors Served (Annual)",
+                min_value=10,
+                max_value=200,
+                value=40,
+                step=5
+            )
+            
+            avg_wage_increase = st.slider(
+                "Avg Wage Increase ($/hr)",
+                min_value=5,
+                max_value=20,
+                value=12,
+                help="From baseline to post-program"
+            )
+            
+            completion_rate = st.slider(
+                "Completion Rate (%)",
+                min_value=50,
+                max_value=90,
+                value=72
+            ) / 100
+            
+            years_projection = st.slider(
+                "Projection Period (years)",
+                1, 10, 5
+            )
+        
+        with col2:
+            st.subheader("ROI Analysis")
+            
+            # Calculations
+            successful_grads = int(survivors_served * completion_rate)
+            annual_earnings_increase = successful_grads * avg_wage_increase * 2080
+            cumulative_impact = annual_earnings_increase * years_projection
+            
+            roi = (cumulative_impact / investment_amount) - 1
+            breakeven_years = investment_amount / annual_earnings_increase if annual_earnings_increase > 0 else float('inf')
+            
+            # Display metrics
+            st.metric("Annual Graduates", successful_grads)
+            st.metric("Annual Economic Impact", f"${annual_earnings_increase:,.0f}")
+            st.metric(f"{years_projection}-Year Cumulative Impact", f"${cumulative_impact:,.0f}")
+            st.metric("ROI", f"{roi*100:,.1f}%", 
+                     delta="Direct economic return" if roi > 0 else "")
+            st.metric("Break-Even Period", f"{breakeven_years:.1f} years")
+            
+            # Social ROI
+            st.markdown("---")
+            st.markdown("**Social Impact Multipliers:**")
+            
+            children_impacted = successful_grads * 2.3  # Avg children per survivor
+            st.metric("Children Positively Impacted", f"{int(children_impacted)}")
+            
+            evictions_prevented = int(successful_grads * 0.4)  # Est 40% would face eviction
+            st.metric("Evictions Prevented", evictions_prevented)
+            
+            public_assistance_reduction = successful_grads * 300 * 12  # Est $300/mo reduction
+            st.metric("Annual Public Assistance Savings", f"${public_assistance_reduction:,.0f}")
+        
+        # Visualization
+        st.subheader("Financial Projection")
+        
+        years = list(range(1, years_projection + 1))
+        cumulative_investment = [investment_amount] * years_projection
+        cumulative_returns = [annual_earnings_increase * y for y in years]
+        
+        fig = go.Figure()
+        
+        fig.add_trace(go.Bar(
+            x=years,
+            y=cumulative_investment,
+            name='Investment',
+            marker_color='rgb(255, 99, 71)'
+        ))
+        
+        fig.add_trace(go.Bar(
+            x=years,
+            y=cumulative_returns,
+            name='Cumulative Returns',
+            marker_color='rgb(50, 205, 50)'
+        ))
+        
+        fig.update_layout(
+            title='Investment vs Returns Over Time',
+            xaxis_title='Year',
+            yaxis_title='Amount ($)',
+            barmode='group',
+            height=400
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # ========================================================================
+    # PAGE 7: 3-YEAR PROJECTIONS
+    # ========================================================================
+    
+    elif page == "🔮 3-Year Projections":
+        st.header("Comprehensive 3-Year Growth Model")
+        
+        st.markdown("""
+        Detailed year-by-year projections for OHFF expansion with realistic growth assumptions.
+        """)
+        
+        # Projection data
+        projection = pd.DataFrame({
+            'Metric': ['Office Locations', 'Staff Members', 'Survivors Served', 
+                      'Average Hourly Wage', 'Completion Rate', 'Annual Budget',
+                      'Private Donors %', 'Institutional Grants %'],
+            'Current': [1, 4, 12, '$22', '69%', '$150k', '70%', '30%'],
+            'Year 1': [2, 8, 28, '$25', '72%', '$400k', '60%', '40%'],
+            'Year 2': [3, 14, 50, '$28', '75%', '$750k', '50%', '50%'],
+            'Year 3': [4, 22, 75, '$32', '78%', '$1.2M', '40%', '60%']
+        })
+        
+        st.dataframe(projection, use_container_width=True, height=350)
+        
+        # Growth trajectory
+        st.subheader("Growth Trajectory Visualization")
+        
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=('Survivors Served', 'Average Wage', 'Staff Growth', 'Budget Growth')
+        )
+        
+        periods = ['Current', 'Year 1', 'Year 2', 'Year 3']
+        survivors = [12, 28, 50, 75]
+        wages = [22, 25, 28, 32]
+        staff = [4, 8, 14, 22]
+        budget = [150, 400, 750, 1200]
+        
+        fig.add_trace(go.Scatter(x=periods, y=survivors, mode='lines+markers', 
+                                name='Survivors', line=dict(color='#1f77b4', width=3)),
+                     row=1, col=1)
+        
+        fig.add_trace(go.Scatter(x=periods, y=wages, mode='lines+markers',
+                                name='Wage', line=dict(color='#2ca02c', width=3)),
+                     row=1, col=2)
+        
+        fig.add_trace(go.Scatter(x=periods, y=staff, mode='lines+markers',
+                                name='Staff', line=dict(color='#ff7f0e', width=3)),
+                     row=2, col=1)
+        
+        fig.add_trace(go.Scatter(x=periods, y=budget, mode='lines+markers',
+                                name='Budget', line=dict(color='#d62728', width=3)),
+                     row=2, col=2)
+        
+        fig.update_layout(height=600, showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Impact summary
+        st.subheader("Cumulative 3-Year Impact")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            total_served = sum(survivors[1:])  # Exclude current
+            st.metric("Total Survivors Served", total_served)
+            st.metric("Lives Directly Impacted", total_served * 3.3, 
+                     help="Survivor + average 2.3 children")
+        
+        with col2:
+            total_investment = sum(budget[1:])
+            wage_increase = 15  # From $15 baseline to $32
+            economic_impact = total_served * wage_increase * 2080
+            st.metric("Total Investment", f"${total_investment}k")
+            st.metric("Economic Impact", f"${economic_impact/1000:.0f}k")
+        
+        with col3:
+            roi = (economic_impact / (total_investment * 1000)) - 1
+            st.metric("3-Year ROI", f"{roi*100:.0f}%")
+            st.metric("Social Impact", "Immeasurable", 
+                     help="Generational transformation")
+        
+        # Final recommendations
+        st.markdown("---")
+        st.markdown("""
+        <div class="success-box">
+        <h3>🎯 Strategic Implementation Roadmap</h3>
+        
+        <b>Phase 1 (Months 1-6): Foundation</b><br>
+        • Secure Year 1 funding ($400k)<br>
+        • Hire 4 additional staff<br>
+        • Identify Bronx office location<br>
+        • Build employer partnerships (3-5 companies)<br>
+        
+        <b>Phase 2 (Months 7-18): Bronx Expansion</b><br>
+        • Open Bronx hub in University Heights<br>
+        • Increase cohort size to 25-30/year<br>
+        • Launch housing navigation program<br>
+        • Establish legal aid partnerships<br>
+        
+        <b>Phase 3 (Months 19-30): Brooklyn Launch</b><br>
+        • Open Brooklyn satellite (East Flatbush)<br>
+        • Serve 50 survivors annually<br>
+        • Implement mentorship program<br>
+        • Diversify funding (50/50 donors/grants)<br>
+        
+        <b>Phase 4 (Months 31-36): Citywide Scale</b><br>
+        • Virtual services for Queens/Staten Island<br>
+        • Serve 75+ survivors annually<br>
+        • Achieve financial sustainability<br>
+        • Document model for replication<br>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Download projection
+        csv = projection.to_csv(index=False)
+        st.download_button(
+            "📥 Download 3-Year Projection",
+            csv,
+            "ohff_3year_projection.csv",
+            "text/csv"
+        )
+    
+    # ========================================================================
+    # ADDITIONAL PAGES (Geographic, Scalability)
+    # ========================================================================
+    
+    elif page == "🗺️ Geographic Intelligence":
+        st.header("Geographic Intelligence & Service Coverage")
+        
+        st.markdown("""
+        Map-based analysis of service coverage and expansion opportunities.
+        """)
+        
+        # Borough-level map simulation
+        borough_data = master_data.groupby('Borough').agg({
+            'need_score': 'mean',
+            'eviction_rate': 'mean',
+            'fips': 'count'
+        }).reset_index()
+        
+        fig = px.bar(
+            borough_data,
+            x='Borough',
+            y='need_score',
+            color='eviction_rate',
+            title='Service Need by Borough',
+            color_continuous_scale='Reds',
+            height=500
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+        st.markdown("""
+        ### Expansion Strategy
+        
+        **Phase 1: Bronx (Priority #1)**
+        - Location: University Heights/Fordham
+        - Target: 20-25 survivors/year
+        - Rationale: Highest eviction rate (105.8), largest concentration of need
+        
+        **Phase 2: Brooklyn**
+        - Location: East Flatbush
+        - Target: 15-20 survivors/year
+        - Rationale: Second-highest crisis indicators, large population
+        
+        **Phase 3: Virtual Citywide**
+        - Reach: Queens & Staten Island
+        - Target: 10-15 survivors/year
+        - Rationale: Cost-effective for lower-density areas
+        """)
+    
+    elif page == "💼 Scalability Model":
+        st.header("Program Scalability Analysis")
+        
+        scale_factor = st.slider("Scale Factor", 1, 10, 3)
+        
+        capacity_model = calculate_service_capacity_model(12, scale_factor)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Capacity Analysis")
+            st.metric("Survivors Served", capacity_model['capacity'])
+            st.metric("Cost per Survivor", f"${capacity_model['cost_per_survivor']:,.0f}")
+            st.metric("Total Annual Budget", f"${capacity_model['total_cost']:,.0f}")
+        
+        with col2:
+            st.subheader("Efficiency Gains")
+            st.metric("Efficiency Improvement", f"{capacity_model['efficiency_gain_pct']:.1f}%")
+            st.markdown(f"""
+            **Economies of Scale:**
+            - Shared administrative costs
+            - Bulk training discounts
+            - Network effects (mentorship)
+            - Stronger employer partnerships
+            """)
+    
+    # Footer
+    st.markdown("---")
+    st.markdown("""
+    <div style='text-align: center; color: #64748b; padding: 2rem;'>
+    <b>OHFF Strategic Intelligence Platform</b><br>
+    Powered by AI & Advanced Analytics | Built for JPMorgan Chase Hackathon 2025<br>
+    Data-Driven Solutions for Domestic Violence Survivor Support
+    </div>
+    """, unsafe_allow_html=True)
+
+if __name__ == "__main__":
+    main()
