@@ -1,1170 +1,804 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-from sklearn.cluster import KMeans
+from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, r2_score, silhouette_score
+from sklearn.metrics import (
+    confusion_matrix, classification_report, roc_curve, auc,
+    precision_recall_curve, f1_score, accuracy_score, recall_score, precision_score
+)
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
 import warnings
 warnings.filterwarnings('ignore')
 
-# ============================================================================
-# PAGE CONFIGURATION
-# ============================================================================
-
+# Page configuration
 st.set_page_config(
-    page_title="OHFF Strategic Intelligence Platform",
-    page_icon="🏠",
+    page_title="Job Placement ML Predictor",
+    page_icon="🎯",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ============================================================================
-# CUSTOM STYLING
-# ============================================================================
-
+# Custom CSS for better aesthetics
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
-    
-    * {
-        font-family: 'Inter', sans-serif;
-    }
-    
     .main-header {
         font-size: 3rem;
-        font-weight: 700;
-        background: linear-gradient(120deg, #1e3a8a 0%, #3b82f6 100%);
+        font-weight: bold;
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         text-align: center;
-        padding: 2rem 0;
-        margin-bottom: 1rem;
+        padding: 1rem 0;
     }
-    
-    .sub-header {
-        font-size: 1.5rem;
-        color: #475569;
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    
     .metric-card {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 2rem;
-        border-radius: 15px;
-        color: white;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-        transition: transform 0.3s;
-    }
-    
-    .metric-card:hover {
-        transform: translateY(-5px);
-    }
-    
-    .crisis-alert {
-        background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%);
-        color: white;
         padding: 1.5rem;
-        border-radius: 12px;
-        font-weight: 600;
-        box-shadow: 0 8px 20px rgba(255, 65, 108, 0.3);
-        margin: 1rem 0;
-    }
-    
-    .success-box {
-        background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+        border-radius: 10px;
         color: white;
-        padding: 1.5rem;
-        border-radius: 12px;
-        font-weight: 600;
-        box-shadow: 0 8px 20px rgba(17, 153, 142, 0.3);
-        margin: 1rem 0;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
-    
-    .insight-box {
-        background: #f8fafc;
-        border-left: 5px solid #3b82f6;
-        padding: 1.5rem;
-        margin: 1.5rem 0;
-        border-radius: 8px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-    }
-    
     .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
+        gap: 2rem;
     }
-    
     .stTabs [data-baseweb="tab"] {
-        border-radius: 8px 8px 0 0;
-        padding: 12px 24px;
+        padding: 1rem 2rem;
         font-weight: 600;
-    }
-    
-    .dataframe {
-        font-size: 0.9rem;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# ============================================================================
-# DATA LOADING WITH ERROR HANDLING
-# ============================================================================
+# Initialize session state
+if 'data_loaded' not in st.session_state:
+    st.session_state.data_loaded = False
+if 'model_trained' not in st.session_state:
+    st.session_state.model_trained = False
+if 'predictions_made' not in st.session_state:
+    st.session_state.predictions_made = False
 
+# Helper Functions
 @st.cache_data
-def load_data_safe():
-    """Safely load all available datasets"""
-    datasets = {}
+def load_and_preprocess_data(file, target_file=None, demo_mode=False):
+    """Load and preprocess the dataset"""
+    df = pd.read_excel(file, header=[0, 1])
     
-    # Try loading each dataset
-    try:
-        datasets['housing'] = pd.read_excel('NYC Housing.xlsx', sheet_name='Data')
-        st.sidebar.success("✓ Housing data loaded")
-    except Exception as e:
-        st.sidebar.warning(f"⚠ Housing data unavailable: {str(e)[:50]}")
-        datasets['housing'] = None
+    # Flatten multi-level columns
+    df.columns = ['_'.join(col).strip() if col[1] != 'nan' else col[0].strip() 
+                  for col in df.columns.values]
     
-    try:
-        datasets['fips'] = pd.read_excel('statecountytractfips.xlsx')
-        st.sidebar.success("✓ FIPS data loaded")
-    except Exception as e:
-        st.sidebar.warning(f"⚠ FIPS data unavailable: {str(e)[:50]}")
-        datasets['fips'] = None
+    # Remove extra rows (header rows that became data)
+    df = df.iloc[1:].reset_index(drop=True)
     
-    try:
-        # Try both extensions
-        try:
-            datasets['snap'] = pd.read_excel('snap_census.csv')
-        except:
-            datasets['snap'] = pd.read_csv('snap_census.csv', encoding='latin-1')
-        st.sidebar.success("✓ SNAP data loaded")
-    except Exception as e:
-        st.sidebar.warning(f"⚠ SNAP data unavailable: {str(e)[:50]}")
-        datasets['snap'] = None
+    # Convert to numeric
+    for col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
     
-    try:
-        datasets['career'] = pd.read_excel('career_census.xlsx')
-        st.sidebar.success("✓ Career data loaded")
-    except Exception as e:
-        st.sidebar.warning(f"⚠ Career data unavailable: {str(e)[:50]}")
-        datasets['career'] = None
+    # Drop rows with all NaN
+    df = df.dropna(how='all').reset_index(drop=True)
     
-    return datasets
-
-@st.cache_data
-def create_synthetic_master_data():
-    """Create synthetic data for demo if real data unavailable"""
-    np.random.seed(42)
-    
-    # NYC boroughs and approximate tract counts
-    boroughs = {
-        'Bronx': 361,
-        'Brooklyn': 805,
-        'Queens': 725,
-        'Manhattan': 310,
-        'Staten Island': 126
+    # Rename columns for clarity
+    column_mapping = {
+        'Participant_nan': 'Participant',
+        'Cohort_nan': 'Cohort',
+        'Stipend_nan': 'Stipend',
+        'Internship _nan': 'Internship',
+        'Microsoft Training Certfications _Excel': 'Excel_Cert',
+        'Microsoft Training Certfications _Expert Excel': 'Excel_Expert_Cert',
+        'Microsoft Training Certfications _Word': 'Word_Cert',
+        'Microsoft Training Certfications _0utlook': 'Outlook_Cert',
+        'Microsoft Training Certfications _PowerPoint': 'PowerPoint_Cert',
+        "Add'l Training_ ": 'Additional_Training',
+        'Childcare Expenses_ ': 'Childcare_Expenses',
+        'Travel Expenses_ ': 'Travel_Expenses',
+        'Household Expenses_ ': 'Household_Expenses',
+        'Education_GED or HSG': 'Education_GED',
+        'Education_Some College': 'Education_Some_College',
+        'Education_BA or BS': 'Education_BA_BS',
+        '# of Children_under 12': 'Num_Children'
     }
     
-    data = []
-    fips_counter = 36000000000
+    df = df.rename(columns=column_mapping)
     
-    for borough, tract_count in boroughs.items():
-        for i in range(tract_count):
-            # Bronx has higher crisis metrics
-            if borough == 'Bronx':
-                eviction_base = 90
-                snap_base = 400
-                poverty_base = 25
-            elif borough == 'Brooklyn':
-                eviction_base = 50
-                snap_base = 300
-                poverty_base = 20
-            else:
-                eviction_base = 35
-                snap_base = 200
-                poverty_base = 15
-            
-            record = {
-                'fips': str(fips_counter + i),
-                'Borough': borough,
-                'Tract': f"{i+1:04d}",
-                'eviction_rate': max(0, np.random.normal(eviction_base, 20)),
-                'snap_households': max(0, int(np.random.normal(snap_base, 100))),
-                'poverty_rate_num': max(0, min(100, np.random.normal(poverty_base, 5))),
-                'unemployed': max(0, int(np.random.normal(100, 30))),
-                'median_income': max(20000, int(np.random.normal(45000, 15000))),
-            }
-            
-            # Calculate need score
-            record['need_score'] = (
-                (record['eviction_rate'] / 150 * 0.4) +
-                (record['snap_households'] / 1000 * 0.3) +
-                (record['poverty_rate_num'] / 100 * 0.3)
-            )
-            
-            data.append(record)
+    # Add target variable
+    if target_file is not None:
+        target_df = pd.read_csv(target_file)
+        df['Got_Job'] = target_df['Got_Job']
+    elif demo_mode:
+        # Generate realistic demo targets based on features
+        np.random.seed(42)
+        # Create a weighted probability based on certifications and training
+        prob = (
+            0.3 + 
+            df['Excel_Cert'] * 0.1 + 
+            df['Excel_Expert_Cert'] * 0.15 + 
+            df['Word_Cert'] * 0.05 + 
+            df['Additional_Training'] * 0.12 + 
+            df['Internship'] * 0.18 + 
+            (df['Education_BA_BS']) * 0.1
+        ).clip(0, 0.95)
+        df['Got_Job'] = np.random.binomial(1, prob)
+    else:
+        df['Got_Job'] = None
+    
+    return df
+
+def train_models(X_train, X_test, y_train, y_test):
+    """Train multiple ML models"""
+    models = {}
+    results = {}
+    
+    # Logistic Regression with L2 regularization
+    log_reg = LogisticRegression(
+        C=1.0, 
+        penalty='l2', 
+        max_iter=1000, 
+        random_state=42,
+        class_weight='balanced'
+    )
+    log_reg.fit(X_train, y_train)
+    models['Logistic Regression'] = log_reg
+    
+    # Random Forest with careful parameters to avoid overfitting
+    rf = RandomForestClassifier(
+        n_estimators=50,
+        max_depth=4,
+        min_samples_split=10,
+        min_samples_leaf=5,
+        random_state=42,
+        class_weight='balanced'
+    )
+    rf.fit(X_train, y_train)
+    models['Random Forest'] = rf
+    
+    # Gradient Boosting
+    gb = GradientBoostingClassifier(
+        n_estimators=50,
+        max_depth=3,
+        learning_rate=0.1,
+        random_state=42
+    )
+    gb.fit(X_train, y_train)
+    models['Gradient Boosting'] = gb
+    
+    # Evaluate models
+    for name, model in models.items():
+        y_pred = model.predict(X_test)
+        y_pred_proba = model.predict_proba(X_test)[:, 1]
         
-        fips_counter += 10000000
-    
-    return pd.DataFrame(data)
-
-# ============================================================================
-# ADVANCED ANALYTICS FUNCTIONS
-# ============================================================================
-
-def perform_clustering_analysis(data, n_clusters=5):
-    """Perform K-means clustering to identify similar crisis areas"""
-    feature_cols = ['eviction_rate', 'snap_households', 'poverty_rate_num', 'unemployed']
-    feature_cols = [col for col in feature_cols if col in data.columns]
-    
-    if len(feature_cols) < 2:
-        return None, None
-    
-    # Prepare data
-    cluster_data = data[feature_cols].dropna()
-    
-    if len(cluster_data) < n_clusters * 5:
-        return None, None
-    
-    # Scale features
-    scaler = StandardScaler()
-    scaled_data = scaler.fit_transform(cluster_data)
-    
-    # Perform clustering
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-    clusters = kmeans.fit_predict(scaled_data)
-    
-    # Calculate silhouette score
-    silhouette_avg = silhouette_score(scaled_data, clusters)
-    
-    # Add clusters to data
-    result_data = data.loc[cluster_data.index].copy()
-    result_data['cluster'] = clusters
-    
-    # Cluster profiles
-    cluster_profiles = result_data.groupby('cluster')[feature_cols].mean()
-    cluster_counts = result_data['cluster'].value_counts()
-    
-    return result_data, {
-        'profiles': cluster_profiles,
-        'counts': cluster_counts,
-        'silhouette': silhouette_avg,
-        'centers': kmeans.cluster_centers_
-    }
-
-def calculate_service_capacity_model(current_capacity, scale_factor, efficiency_gain=0.1):
-    """Calculate realistic service capacity with economies of scale"""
-    base_capacity = current_capacity
-    scaled_capacity = base_capacity * scale_factor
-    
-    # Efficiency gains from scale
-    efficiency_bonus = scaled_capacity * efficiency_gain * (scale_factor - 1)
-    
-    total_capacity = int(scaled_capacity + efficiency_bonus)
-    
-    # Cost calculations
-    cost_per_survivor_base = 12500
-    cost_reduction_per_scale = 0.05  # 5% reduction per scale factor
-    adjusted_cost = cost_per_survivor_base * (1 - cost_reduction_per_scale * (scale_factor - 1))
-    
-    return {
-        'capacity': total_capacity,
-        'cost_per_survivor': adjusted_cost,
-        'total_cost': total_capacity * adjusted_cost,
-        'efficiency_gain_pct': efficiency_gain * 100 * (scale_factor - 1)
-    }
-
-def prioritize_tracts_multi_criteria(data, weights=None):
-    """Multi-criteria decision analysis for tract prioritization"""
-    if weights is None:
-        weights = {
-            'eviction_rate': 0.35,
-            'snap_households': 0.25,
-            'poverty_rate_num': 0.20,
-            'unemployed': 0.20
+        results[name] = {
+            'model': model,
+            'predictions': y_pred,
+            'probabilities': y_pred_proba,
+            'accuracy': accuracy_score(y_test, y_pred),
+            'precision': precision_score(y_test, y_pred, zero_division=0),
+            'recall': recall_score(y_test, y_pred, zero_division=0),
+            'f1': f1_score(y_test, y_pred, zero_division=0),
+            'specificity': recall_score(y_test, y_pred, pos_label=0, zero_division=0),
+            'confusion_matrix': confusion_matrix(y_test, y_pred)
         }
     
-    criteria_cols = [col for col in weights.keys() if col in data.columns]
+    return models, results
+
+def create_roc_curve(y_test, results):
+    """Create interactive ROC curve"""
+    fig = go.Figure()
     
-    if not criteria_cols:
-        return data
+    for name, result in results.items():
+        fpr, tpr, _ = roc_curve(y_test, result['probabilities'])
+        roc_auc = auc(fpr, tpr)
+        
+        fig.add_trace(go.Scatter(
+            x=fpr, y=tpr,
+            name=f'{name} (AUC = {roc_auc:.3f})',
+            mode='lines',
+            line=dict(width=2)
+        ))
     
-    # Normalize each criterion (0-1 scale)
-    normalized = data.copy()
-    for col in criteria_cols:
-        if data[col].max() > 0:
-            normalized[f'{col}_norm'] = data[col] / data[col].max()
-        else:
-            normalized[f'{col}_norm'] = 0
+    fig.add_trace(go.Scatter(
+        x=[0, 1], y=[0, 1],
+        name='Random Classifier',
+        mode='lines',
+        line=dict(dash='dash', color='gray')
+    ))
     
-    # Calculate weighted score
-    normalized['priority_score'] = sum(
-        normalized[f'{col}_norm'] * weights[col] 
-        for col in criteria_cols
+    fig.update_layout(
+        title='ROC Curves - Model Comparison',
+        xaxis_title='False Positive Rate',
+        yaxis_title='True Positive Rate',
+        hovermode='closest',
+        height=500
     )
     
-    # Rank tracts
-    normalized['priority_rank'] = normalized['priority_score'].rank(ascending=False, method='dense')
-    
-    return normalized.sort_values('priority_score', ascending=False)
+    return fig
 
-# ============================================================================
-# MAIN APPLICATION
-# ============================================================================
+def create_feature_importance(model, feature_names, model_name):
+    """Create feature importance visualization"""
+    if model_name == 'Logistic Regression':
+        importance = np.abs(model.coef_[0])
+        title = 'Feature Importance (Absolute Coefficients)'
+    else:
+        importance = model.feature_importances_
+        title = 'Feature Importance'
+    
+    # Sort features by importance
+    indices = np.argsort(importance)[::-1]
+    
+    fig = go.Figure(go.Bar(
+        x=importance[indices],
+        y=[feature_names[i] for i in indices],
+        orientation='h',
+        marker=dict(
+            color=importance[indices],
+            colorscale='Viridis',
+            showscale=True
+        )
+    ))
+    
+    fig.update_layout(
+        title=f'{title} - {model_name}',
+        xaxis_title='Importance',
+        yaxis_title='Feature',
+        height=600,
+        showlegend=False
+    )
+    
+    return fig
 
-def main():
+def create_confusion_matrix_plot(cm, model_name):
+    """Create interactive confusion matrix"""
+    labels = ['No Job', 'Got Job']
     
-    # Header
-    st.markdown('<h1 class="main-header">OHFF Strategic Intelligence Platform</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">AI-Powered Expansion Strategy for Domestic Violence Survivor Services</p>', unsafe_allow_html=True)
+    # Calculate percentages
+    cm_percent = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis] * 100
     
-    # Load data
-    with st.spinner("Loading datasets and initializing AI models..."):
-        datasets = load_data_safe()
+    text = [[f'{cm[i][j]}<br>({cm_percent[i][j]:.1f}%)' 
+             for j in range(len(cm[0]))] 
+            for i in range(len(cm))]
+    
+    fig = go.Figure(data=go.Heatmap(
+        z=cm,
+        x=labels,
+        y=labels,
+        text=text,
+        texttemplate='%{text}',
+        colorscale='Blues',
+        showscale=True
+    ))
+    
+    fig.update_layout(
+        title=f'Confusion Matrix - {model_name}',
+        xaxis_title='Predicted',
+        yaxis_title='Actual',
+        height=400
+    )
+    
+    return fig
+
+def interpret_model(model, feature_names, model_name):
+    """Generate human-readable interpretation"""
+    interpretation = f"## 🔍 {model_name} Interpretation\n\n"
+    
+    if model_name == 'Logistic Regression':
+        coefs = model.coef_[0]
+        # Get odds ratios
+        odds_ratios = np.exp(coefs)
         
-        # Use real data if available, otherwise synthetic
-        if datasets['housing'] is not None or datasets['snap'] is not None:
-            master_data = create_synthetic_master_data()  # Simplified for demo
-            st.info("📊 Using real data sources where available + synthetic modeling for demo")
-        else:
-            master_data = create_synthetic_master_data()
-            st.warning("📊 Demo mode: Using synthetic data for analysis demonstration")
+        # Sort by absolute coefficient value
+        indices = np.argsort(np.abs(coefs))[::-1]
+        
+        interpretation += "### Key Insights:\n\n"
+        interpretation += "**Positive Predictors (Increase job placement probability):**\n\n"
+        
+        positive_features = [(feature_names[i], coefs[i], odds_ratios[i]) 
+                           for i in indices if coefs[i] > 0.1][:5]
+        
+        if positive_features:
+            for feat, coef, odds in positive_features:
+                impact = (odds - 1) * 100
+                interpretation += f"- **{feat}**: Increases odds by {impact:.1f}% (coefficient: {coef:.3f})\n"
+        
+        interpretation += "\n**Negative Predictors (Decrease job placement probability):**\n\n"
+        
+        negative_features = [(feature_names[i], coefs[i], odds_ratios[i]) 
+                           for i in indices if coefs[i] < -0.1][:5]
+        
+        if negative_features:
+            for feat, coef, odds in negative_features:
+                impact = (1 - odds) * 100
+                interpretation += f"- **{feat}**: Decreases odds by {impact:.1f}% (coefficient: {coef:.3f})\n"
+        
+    else:
+        importance = model.feature_importances_
+        indices = np.argsort(importance)[::-1]
+        
+        interpretation += "### Top 5 Most Important Features:\n\n"
+        for i, idx in enumerate(indices[:5], 1):
+            interpretation += f"{i}. **{feature_names[idx]}**: {importance[idx]:.4f}\n"
+    
+    return interpretation
+
+# Main App
+def main():
+    st.markdown('<h1 class="main-header">🎯 Job Placement ML Predictor</h1>', unsafe_allow_html=True)
+    st.markdown("### *Powered by Advanced Machine Learning*")
     
     # Sidebar
-    st.sidebar.title("🎯 Navigation")
-    st.sidebar.markdown("---")
-    
-    page = st.sidebar.radio(
-        "Select Analysis Module",
-        [
-            "🏠 Executive Dashboard",
-            "🔥 Crisis Hotspot Identifier",
-            "🤖 AI Expansion Predictor",
-            "🗺️ Geographic Intelligence",
-            "📊 Clustering Analysis",
-            "💼 Scalability Model",
-            "🎯 Multi-Criteria Prioritization",
-            "📈 ROI Calculator",
-            "🔮 3-Year Projections"
-        ],
-        help="Navigate through different analytical modules"
-    )
-    
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### Data Sources")
-    st.sidebar.caption(f"Census Tracts: {len(master_data):,}")
-    st.sidebar.caption(f"Boroughs: {master_data['Borough'].nunique()}")
-    
-    # ========================================================================
-    # PAGE 1: EXECUTIVE DASHBOARD
-    # ========================================================================
-    
-    if page == "🏠 Executive Dashboard":
-        st.header("Executive Dashboard: Critical Intelligence")
+    with st.sidebar:
+        st.image("https://img.icons8.com/clouds/200/000000/artificial-intelligence.png", width=150)
+        st.markdown("## 📊 Control Panel")
         
-        # KPI Metrics
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-            st.metric("NYC Census Tracts", f"{len(master_data):,}", 
-                     delta="Complete Coverage", delta_color="normal")
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        with col2:
-            avg_eviction = master_data['eviction_rate'].mean()
-            bronx_eviction = master_data[master_data['Borough']=='Bronx']['eviction_rate'].mean()
-            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-            st.metric("Bronx Eviction Rate", f"{bronx_eviction:.1f}", 
-                     delta=f"+{bronx_eviction-avg_eviction:.1f} vs NYC avg", delta_color="inverse")
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        with col3:
-            crisis_tracts = len(master_data[master_data['need_score'] > 0.7])
-            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-            st.metric("Extreme Crisis Zones", f"{crisis_tracts:,}", 
-                     delta=f"{crisis_tracts/len(master_data)*100:.1f}% of NYC", delta_color="inverse")
-            st.markdown('</div>', unsafe_allow_html=True)
-        
-        with col4:
-            total_snap = int(master_data['snap_households'].sum())
-            st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-            st.metric("Food Insecure HH", f"{total_snap:,}", 
-                     delta="Require Support", delta_color="normal")
-            st.markdown('</div>', unsafe_allow_html=True)
+        mode = st.radio(
+            "Select Mode:",
+            ["📁 Upload Data", "🎮 Demo Mode"],
+            help="Upload your own data or try the demo"
+        )
         
         st.markdown("---")
+        st.markdown("### ⚙️ Model Settings")
         
-        # Critical Alert
-        st.markdown("""
-        <div class="crisis-alert">
-        🚨 <b>CRITICAL FINDING</b>: Bronx shows 2x higher crisis indicators than NYC average.
-        Immediate intervention required in 361 census tracts affecting ~1.4M residents.
-        </div>
-        """, unsafe_allow_html=True)
+        test_size = st.slider("Test Set Size", 0.1, 0.4, 0.3, 0.05)
+        threshold = st.slider("Classification Threshold", 0.3, 0.7, 0.5, 0.05)
         
-        # Borough Comparison
-        st.subheader("📊 Borough Crisis Comparison")
-        
-        borough_stats = master_data.groupby('Borough').agg({
-            'eviction_rate': 'mean',
-            'snap_households': 'sum',
-            'need_score': 'mean',
-            'fips': 'count'
-        }).round(2)
-        borough_stats.columns = ['Avg Eviction Rate', 'Total SNAP HH', 'Avg Need Score', 'Tracts']
-        borough_stats = borough_stats.sort_values('Avg Need Score', ascending=False)
-        
-        fig = go.Figure()
-        
-        fig.add_trace(go.Bar(
-            x=borough_stats.index,
-            y=borough_stats['Avg Eviction Rate'],
-            name='Eviction Rate',
-            marker_color='rgb(255, 65, 54)',
-            text=borough_stats['Avg Eviction Rate'].round(1),
-            textposition='outside'
-        ))
-        
-        fig.add_trace(go.Scatter(
-            x=borough_stats.index,
-            y=borough_stats['Avg Need Score'] * 100,
-            name='Need Score (x100)',
-            yaxis='y2',
-            line=dict(color='rgb(26, 118, 255)', width=3),
-            mode='lines+markers',
-            marker=dict(size=12)
-        ))
-        
-        fig.update_layout(
-            title='Borough Crisis Indicators: Eviction Rate vs Need Score',
-            yaxis=dict(title='Eviction Filing Rate'),
-            yaxis2=dict(title='Need Score (scaled)', overlaying='y', side='right'),
-            hovermode='x unified',
-            height=500
+        st.markdown("---")
+        st.markdown("### 📈 Model Selection")
+        model_choice = st.selectbox(
+            "Primary Model:",
+            ["Logistic Regression", "Random Forest", "Gradient Boosting"]
         )
+    
+    # Main content area
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📤 Data Upload", 
+        "🔬 Exploratory Analysis", 
+        "🤖 Model Training", 
+        "📊 Results & Insights",
+        "🎯 Make Predictions"
+    ])
+    
+    # Tab 1: Data Upload
+    with tab1:
+        st.markdown("## 📂 Data Management")
         
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Strategic Insights
         col1, col2 = st.columns(2)
         
         with col1:
-            st.markdown("""
-            <div class="insight-box">
-            <h4>🎯 Immediate Strategic Actions</h4>
-            <ul>
-            <li><b>Geographic Priority</b>: Bronx (361 tracts)</li>
-            <li><b>Service Gap</b>: Current reach <1% of need</li>
-            <li><b>Wage Target</b>: Increase $22/hr → $30-35/hr</li>
-            <li><b>Scalability</b>: 4x capacity achievable in 18 months</li>
-            </ul>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown("### Main Dataset")
+            uploaded_file = st.file_uploader(
+                "Upload Excel file with features",
+                type=['xlsx', 'xls'],
+                help="Upload the transformation squared data file"
+            )
         
         with col2:
-            st.markdown("""
-            <div class="insight-box">
-            <h4>💡 Key Data Insights</h4>
-            <ul>
-            <li><b>Crisis Concentration</b>: Top 50 tracts = 20% of need</li>
-            <li><b>Multi-dimensional</b>: Housing + Food + Employment crisis</li>
-            <li><b>Scalable Impact</b>: Strategic expansion → 10x reach</li>
-            <li><b>ROI</b>: 2.5-3x economic return per dollar invested</li>
-            </ul>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown("### Target Variable (Optional)")
+            target_file = st.file_uploader(
+                "Upload CSV with 'Got_Job' column",
+                type=['csv'],
+                help="CSV with participant IDs and job outcomes"
+            )
         
-        # Top priority tracts
-        st.subheader("🔥 Top 20 Priority Expansion Targets")
+        if mode == "🎮 Demo Mode":
+            st.info("📌 Running in **Demo Mode** - Synthetic targets will be generated for demonstration")
+            demo_mode = True
+            if uploaded_file is None:
+                st.warning("Please upload the main dataset to proceed")
+                return
+        else:
+            demo_mode = False
+            if uploaded_file is None:
+                st.warning("Please upload the main dataset")
+                return
+            if target_file is None:
+                st.warning("Please upload the target variable file, or switch to Demo Mode")
+                return
         
-        top_20 = master_data.nlargest(20, 'need_score')[
-            ['Borough', 'Tract', 'eviction_rate', 'snap_households', 'poverty_rate_num', 'need_score']
-        ].round(2)
-        
-        st.dataframe(
-            top_20.style.background_gradient(subset=['need_score'], cmap='Reds'),
-            use_container_width=True,
-            height=400
-        )
+        if st.button("🚀 Load & Process Data", type="primary"):
+            with st.spinner("Processing data..."):
+                try:
+                    df = load_and_preprocess_data(uploaded_file, target_file, demo_mode)
+                    st.session_state.df = df
+                    st.session_state.data_loaded = True
+                    st.success(f"✅ Data loaded successfully! {len(df)} participants")
+                    
+                    # Quick stats
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Total Participants", len(df))
+                    with col2:
+                        if df['Got_Job'].notna().any():
+                            st.metric("Job Placement Rate", f"{df['Got_Job'].mean()*100:.1f}%")
+                    with col3:
+                        st.metric("Features", len(df.columns) - 3)
+                    with col4:
+                        st.metric("Complete Records", df.notna().all(axis=1).sum())
+                    
+                except Exception as e:
+                    st.error(f"Error loading data: {str(e)}")
     
-    # ========================================================================
-    # PAGE 2: CRISIS HOTSPOT IDENTIFIER
-    # ========================================================================
-    
-    elif page == "🔥 Crisis Hotspot Identifier":
-        st.header("Crisis Hotspot Identification Engine")
-        
-        # Filters
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            selected_boroughs = st.multiselect(
-                "Filter by Borough",
-                options=master_data['Borough'].unique(),
-                default=master_data['Borough'].unique()
-            )
-        
-        with col2:
-            min_eviction = st.slider(
-                "Min Eviction Rate",
-                0, int(master_data['eviction_rate'].max()),
-                0
-            )
-        
-        with col3:
-            min_need = st.slider(
-                "Min Need Score",
-                0.0, 1.0, 0.5, 0.1
-            )
-        
-        # Filter data
-        filtered = master_data[
-            (master_data['Borough'].isin(selected_boroughs)) &
-            (master_data['eviction_rate'] >= min_eviction) &
-            (master_data['need_score'] >= min_need)
-        ]
-        
-        st.info(f"📍 {len(filtered):,} tracts match criteria ({len(filtered)/len(master_data)*100:.1f}% of NYC)")
-        
-        # Visualizations
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Scatter plot
-            fig = px.scatter(
-                filtered,
-                x='eviction_rate',
-                y='snap_households',
-                size='need_score',
-                color='Borough',
-                hover_data=['Tract', 'poverty_rate_num'],
-                title='Multi-Crisis Overlay: Eviction vs Food Insecurity',
-                labels={
-                    'eviction_rate': 'Eviction Filing Rate',
-                    'snap_households': 'SNAP Households'
-                },
-                height=500
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with col2:
-            # Heatmap
-            heatmap_data = filtered.groupby('Borough').agg({
-                'eviction_rate': 'mean',
-                'snap_households': 'mean',
-                'poverty_rate_num': 'mean',
-                'need_score': 'mean'
-            }).T
+    # Tab 2: Exploratory Analysis
+    with tab2:
+        if not st.session_state.data_loaded:
+            st.info("👈 Please load data first from the Data Upload tab")
+        else:
+            df = st.session_state.df
             
-            fig = px.imshow(
-                heatmap_data,
-                labels=dict(x="Borough", y="Metric", color="Value"),
-                aspect="auto",
-                title="Crisis Intensity Heatmap",
-                color_continuous_scale='Reds',
-                height=500
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        
-        # Bronx Deep Dive
-        if 'Bronx' in selected_boroughs:
-            st.markdown("---")
-            st.subheader("🔴 Bronx Crisis Deep Dive")
+            st.markdown("## 🔍 Data Exploration")
             
-            bronx_data = filtered[filtered['Borough'] == 'Bronx']
-            
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2 = st.columns([2, 1])
             
             with col1:
-                st.metric("Bronx Tracts", len(bronx_data))
+                st.markdown("### 📋 Dataset Preview")
+                st.dataframe(df.head(20), use_container_width=True, height=400)
+            
             with col2:
-                st.metric("Avg Eviction Rate", f"{bronx_data['eviction_rate'].mean():.1f}")
-            with col3:
-                extreme_crisis = len(bronx_data[bronx_data['need_score'] > 0.8])
-                st.metric("Extreme Crisis (>0.8)", extreme_crisis)
-            with col4:
-                est_survivors = extreme_crisis * 200  # Estimate
-                st.metric("Est. DV Survivors", f"{est_survivors:,}")
+                st.markdown("### 📊 Summary Statistics")
+                st.write(df.describe())
             
-            # Top Bronx tracts
-            st.markdown("##### Top 10 Bronx Crisis Tracts")
-            bronx_top = bronx_data.nlargest(10, 'need_score')[
-                ['Tract', 'eviction_rate', 'snap_households', 'need_score']
-            ]
-            st.dataframe(bronx_top, use_container_width=True)
-    
-    # ========================================================================
-    # PAGE 3: AI EXPANSION PREDICTOR
-    # ========================================================================
-    
-    elif page == "🤖 AI Expansion Predictor":
-        st.header("AI-Powered Expansion Prediction Model")
-        
-        st.markdown("""
-        Advanced machine learning model using **Gradient Boosting** to predict optimal 
-        expansion locations based on multi-dimensional crisis indicators.
-        """)
-        
-        # Train model
-        with st.spinner("Training ML model..."):
-            feature_cols = ['eviction_rate', 'snap_households', 'poverty_rate_num', 'unemployed']
+            # Feature distributions
+            st.markdown("### 📈 Feature Distributions")
             
-            X = master_data[feature_cols]
-            y = master_data['need_score']
+            feature_cols = [col for col in df.columns if col not in ['Participant', 'Cohort', 'Got_Job']]
             
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-            
-            scaler = StandardScaler()
-            X_train_scaled = scaler.fit_transform(X_train)
-            X_test_scaled = scaler.transform(X_test)
-            
-            model = GradientBoostingRegressor(n_estimators=100, random_state=42)
-            model.fit(X_train_scaled, y_train)
-            
-            y_pred = model.predict(X_test_scaled)
-            r2 = r2_score(y_test, y_pred)
-            rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-        
-        # Model performance
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.metric("R² Score", f"{r2:.4f}", "Prediction Accuracy")
-        with col2:
-            st.metric("RMSE", f"{rmse:.4f}", "Error Rate")
-        with col3:
-            st.metric("Training Samples", f"{len(X_train):,}", "Data Points")
-        
-        # Feature importance
-        st.subheader("📊 Feature Importance Analysis")
-        
-        importance_df = pd.DataFrame({
-            'Feature': feature_cols,
-            'Importance': model.feature_importances_
-        }).sort_values('Importance', ascending=False)
-        
-        fig = px.bar(
-            importance_df,
-            x='Importance',
-            y='Feature',
-            orientation='h',
-            title='Which Factors Predict Service Need?',
-            color='Importance',
-            color_continuous_scale='Blues'
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Scenario planning
-        st.subheader("🎯 Expansion Scenario Planner")
-        
-        col1, col2 = st.columns([1, 2])
-        
-        with col1:
-            n_tracts = st.slider("Number of tracts to target", 10, 100, 20, 5)
-            target_borough = st.selectbox("Focus Borough", ['All'] + list(master_data['Borough'].unique()))
-        
-        with col2:
-            if target_borough == 'All':
-                scenario_data = master_data.nlargest(n_tracts, 'need_score')
-            else:
-                scenario_data = master_data[master_data['Borough'] == target_borough].nlargest(n_tracts, 'need_score')
-            
-            est_pop = n_tracts * 4000
-            est_dv = int(est_pop * 0.05)
-            reach_1pct = int(est_dv * 0.01)
-            
-            col_a, col_b, col_c = st.columns(3)
-            with col_a:
-                st.metric("Est. Population", f"{est_pop:,}")
-            with col_b:
-                st.metric("Est. DV Survivors", f"{est_dv:,}")
-            with col_c:
-                st.metric("1% Reach Target", reach_1pct)
-            
-            scale_needed = reach_1pct / 12
-            st.metric("Scale Factor Required", f"{scale_needed:.1f}x", 
-                     help="Times current capacity needed to reach 1% of survivors")
-        
-        # Map prediction
-        st.subheader("🗺️ Predicted High-Need Areas")
-        
-        master_data['predicted_need'] = model.predict(scaler.transform(master_data[feature_cols]))
-        
-        fig = px.scatter(
-            master_data,
-            x='need_score',
-            y='predicted_need',
-            color='Borough',
-            title='Actual vs Predicted Need Score',
-            labels={'need_score': 'Actual Need Score', 'predicted_need': 'Predicted Need Score'}
-        )
-        fig.add_trace(go.Scatter(
-            x=[0, 1],
-            y=[0, 1],
-            mode='lines',
-            name='Perfect Prediction',
-            line=dict(dash='dash', color='gray')
-        ))
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # ========================================================================
-    # PAGE 4: CLUSTERING ANALYSIS
-    # ========================================================================
-    
-    elif page == "📊 Clustering Analysis":
-        st.header("AI Clustering: Identifying Similar Crisis Patterns")
-        
-        st.markdown("""
-        K-Means clustering to group census tracts with similar crisis profiles, 
-        enabling targeted intervention strategies for each cluster type.
-        """)
-        
-        n_clusters = st.slider("Number of Clusters", 3, 8, 5)
-        
-        with st.spinner("Performing clustering analysis..."):
-            clustered_data, cluster_info = perform_clustering_analysis(master_data, n_clusters)
-        
-        if clustered_data is not None:
-            st.success(f"✓ Clustering complete | Silhouette Score: {cluster_info['silhouette']:.3f}")
-            
-            # Cluster visualization
-            fig = px.scatter(
-                clustered_data,
-                x='eviction_rate',
-                y='snap_households',
-                color='cluster',
-                size='need_score',
-                hover_data=['Borough', 'Tract'],
-                title=f'{n_clusters} Distinct Crisis Clusters Identified',
-                labels={'cluster': 'Cluster ID'}
+            selected_features = st.multiselect(
+                "Select features to visualize:",
+                feature_cols,
+                default=feature_cols[:4]
             )
-            st.plotly_chart(fig, use_container_width=True)
             
-            # Cluster profiles
-            st.subheader("Cluster Profiles & Intervention Strategies")
+            if selected_features and df['Got_Job'].notna().any():
+                fig = make_subplots(
+                    rows=2, cols=2,
+                    subplot_titles=selected_features[:4]
+                )
+                
+                for idx, feature in enumerate(selected_features[:4], 1):
+                    row = (idx - 1) // 2 + 1
+                    col = (idx - 1) % 2 + 1
+                    
+                    data_no_job = df[df['Got_Job'] == 0][feature]
+                    data_got_job = df[df['Got_Job'] == 1][feature]
+                    
+                    fig.add_trace(
+                        go.Histogram(x=data_no_job, name='No Job', opacity=0.7),
+                        row=row, col=col
+                    )
+                    fig.add_trace(
+                        go.Histogram(x=data_got_job, name='Got Job', opacity=0.7),
+                        row=row, col=col
+                    )
+                
+                fig.update_layout(height=600, showlegend=True, barmode='overlay')
+                st.plotly_chart(fig, use_container_width=True)
             
-            for cluster_id in range(n_clusters):
-                with st.expander(f"Cluster {cluster_id} - {cluster_info['counts'][cluster_id]} tracts"):
-                    profile = cluster_info['profiles'].loc[cluster_id]
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.markdown("**Profile Metrics:**")
-                        for metric, value in profile.items():
-                            st.metric(metric.replace('_', ' ').title(), f"{value:.1f}")
-                    
-                    with col2:
-                        # Intervention recommendation
-                        if profile['eviction_rate'] > 80:
-                            priority = "🔴 CRITICAL"
-                            strategy = "Emergency housing stabilization + legal aid"
-                        elif profile['snap_households'] > 400:
-                            priority = "🟠 HIGH"
-                            strategy = "Food security + employment support"
-                        else:
-                            priority = "🟡 MODERATE"
-                            strategy = "Preventive services + job training"
-                        
-                        st.markdown(f"**Priority Level:** {priority}")
-                        st.markdown(f"**Recommended Strategy:** {strategy}")
+            # Correlation heatmap
+            if df['Got_Job'].notna().any():
+                st.markdown("### 🔗 Feature Correlations with Job Outcome")
+                
+                correlations = df[feature_cols + ['Got_Job']].corr()['Got_Job'].drop('Got_Job').sort_values(ascending=False)
+                
+                fig = go.Figure(go.Bar(
+                    x=correlations.values,
+                    y=correlations.index,
+                    orientation='h',
+                    marker=dict(
+                        color=correlations.values,
+                        colorscale='RdYlGn',
+                        showscale=True
+                    )
+                ))
+                
+                fig.update_layout(
+                    title='Correlation with Job Placement',
+                    xaxis_title='Correlation Coefficient',
+                    height=600
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+    
+    # Tab 3: Model Training
+    with tab3:
+        if not st.session_state.data_loaded:
+            st.info("👈 Please load data first from the Data Upload tab")
+        elif st.session_state.df['Got_Job'].isna().all():
+            st.warning("No target variable available. Please upload target data or use Demo Mode")
         else:
-            st.error("Unable to perform clustering analysis - insufficient data")
-    
-    # ========================================================================
-    # PAGE 5: MULTI-CRITERIA PRIORITIZATION
-    # ========================================================================
-    
-    elif page == "🎯 Multi-Criteria Prioritization":
-        st.header("Multi-Criteria Decision Analysis")
-        
-        st.markdown("""
-        Customize weighting of different crisis factors to generate personalized expansion priorities.
-        """)
-        
-        # Weight customization
-        st.subheader("Customize Priority Weights")
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            w_eviction = st.slider("Eviction Weight", 0, 100, 35) / 100
-        with col2:
-            w_snap = st.slider("SNAP Weight", 0, 100, 25) / 100
-        with col3:
-            w_poverty = st.slider("Poverty Weight", 0, 100, 20) / 100
-        with col4:
-            w_unemploy = st.slider("Unemployment Weight", 0, 100, 20) / 100
-        
-        total_weight = w_eviction + w_snap + w_poverty + w_unemploy
-        
-        if abs(total_weight - 1.0) > 0.01:
-            st.warning(f"⚠️ Weights sum to {total_weight:.2f} - normalizing to 1.0")
-            w_eviction /= total_weight
-            w_snap /= total_weight
-            w_poverty /= total_weight
-            w_unemploy /= total_weight
-        
-        # Apply weights
-        weights = {
-            'eviction_rate': w_eviction,
-            'snap_households': w_snap,
-            'poverty_rate_num': w_poverty,
-            'unemployed': w_unemploy
-        }
-        
-        prioritized = prioritize_tracts_multi_criteria(master_data, weights)
-        
-        # Display results
-        st.subheader("Top 30 Priority Tracts (Custom Weighted)")
-        
-        top_30 = prioritized.head(30)[
-            ['Borough', 'Tract', 'eviction_rate', 'snap_households', 
-             'poverty_rate_num', 'priority_score', 'priority_rank']
-        ].round(2)
-        
-        st.dataframe(
-            top_30.style.background_gradient(subset=['priority_score'], cmap='RdYlGn_r'),
-            use_container_width=True,
-            height=600
-        )
-        
-        # Download results
-        csv = top_30.to_csv(index=False)
-        st.download_button(
-            label="📥 Download Priority List",
-            data=csv,
-            file_name="ohff_expansion_priorities.csv",
-            mime="text/csv"
-        )
-    
-    # ========================================================================
-    # PAGE 6: ROI CALCULATOR
-    # ========================================================================
-    
-    elif page == "📈 ROI Calculator":
-        st.header("Return on Investment Calculator")
-        
-        st.markdown("""
-        Calculate projected ROI for different expansion scenarios with detailed financial modeling.
-        """)
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("Input Parameters")
+            df = st.session_state.df
             
-            investment_amount = st.number_input(
-                "Total Investment ($)",
-                min_value=100000,
-                max_value=5000000,
-                value=500000,
-                step=50000
+            st.markdown("## 🤖 Model Training Pipeline")
+            
+            if st.button("🎯 Train Models", type="primary"):
+                with st.spinner("Training multiple models..."):
+                    # Prepare data
+                    feature_cols = [col for col in df.columns if col not in ['Participant', 'Cohort', 'Got_Job']]
+                    X = df[feature_cols].values
+                    y = df['Got_Job'].values
+                    
+                    # Split data
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        X, y, test_size=test_size, random_state=42, stratify=y
+                    )
+                    
+                    # Scale features
+                    scaler = StandardScaler()
+                    X_train_scaled = scaler.fit_transform(X_train)
+                    X_test_scaled = scaler.transform(X_test)
+                    
+                    # Train models
+                    models, results = train_models(X_train_scaled, X_test_scaled, y_train, y_test)
+                    
+                    # Save to session state
+                    st.session_state.models = models
+                    st.session_state.results = results
+                    st.session_state.X_test = X_test_scaled
+                    st.session_state.y_test = y_test
+                    st.session_state.feature_names = feature_cols
+                    st.session_state.scaler = scaler
+                    st.session_state.model_trained = True
+                    
+                    st.success("✅ Models trained successfully!")
+                    
+                    # Display results
+                    st.markdown("### 📊 Model Performance Comparison")
+                    
+                    comparison_data = []
+                    for name, result in results.items():
+                        comparison_data.append({
+                            'Model': name,
+                            'Accuracy': f"{result['accuracy']:.3f}",
+                            'Precision': f"{result['precision']:.3f}",
+                            'Recall': f"{result['recall']:.3f}",
+                            'F1-Score': f"{result['f1']:.3f}",
+                            'Specificity': f"{result['specificity']:.3f}"
+                        })
+                    
+                    comparison_df = pd.DataFrame(comparison_data)
+                    st.dataframe(comparison_df, use_container_width=True)
+                    
+                    # Highlight best model for specificity
+                    best_model = max(results.items(), key=lambda x: x[1]['specificity'])[0]
+                    st.info(f"🏆 **Best Model for Specificity**: {best_model}")
+                    
+                    # Cross-validation scores
+                    st.markdown("### 🔄 Cross-Validation Scores (5-Fold)")
+                    
+                    cv_scores = {}
+                    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+                    
+                    for name, model in models.items():
+                        scores = cross_val_score(model, X_train_scaled, y_train, cv=skf, scoring='accuracy')
+                        cv_scores[name] = scores
+                    
+                    cv_data = []
+                    for name, scores in cv_scores.items():
+                        cv_data.append({
+                            'Model': name,
+                            'Mean CV Score': f"{scores.mean():.3f}",
+                            'Std Dev': f"{scores.std():.3f}",
+                            'Min': f"{scores.min():.3f}",
+                            'Max': f"{scores.max():.3f}"
+                        })
+                    
+                    cv_df = pd.DataFrame(cv_data)
+                    st.dataframe(cv_df, use_container_width=True)
+    
+    # Tab 4: Results & Insights
+    with tab4:
+        if not st.session_state.model_trained:
+            st.info("👈 Please train models first from the Model Training tab")
+        else:
+            st.markdown("## 📈 Comprehensive Model Analysis")
+            
+            results = st.session_state.results
+            y_test = st.session_state.y_test
+            
+            # ROC Curves
+            st.markdown("### 📉 ROC Curves")
+            roc_fig = create_roc_curve(y_test, results)
+            st.plotly_chart(roc_fig, use_container_width=True)
+            
+            # Model-specific analysis
+            st.markdown(f"### 🔍 Detailed Analysis: {model_choice}")
+            
+            selected_result = results[model_choice]
+            selected_model = st.session_state.models[model_choice]
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Confusion Matrix
+                cm_fig = create_confusion_matrix_plot(
+                    selected_result['confusion_matrix'],
+                    model_choice
+                )
+                st.plotly_chart(cm_fig, use_container_width=True)
+            
+            with col2:
+                # Metrics
+                st.markdown("#### 📊 Performance Metrics")
+                metrics_html = f"""
+                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                            padding: 1.5rem; border-radius: 10px; color: white;">
+                    <h3 style="color: white; margin-top: 0;">Key Metrics</h3>
+                    <p><strong>Accuracy:</strong> {selected_result['accuracy']:.1%}</p>
+                    <p><strong>Precision:</strong> {selected_result['precision']:.1%}</p>
+                    <p><strong>Recall (Sensitivity):</strong> {selected_result['recall']:.1%}</p>
+                    <p><strong>Specificity:</strong> {selected_result['specificity']:.1%}</p>
+                    <p><strong>F1-Score:</strong> {selected_result['f1']:.1%}</p>
+                </div>
+                """
+                st.markdown(metrics_html, unsafe_allow_html=True)
+                
+                # Classification Report
+                st.markdown("#### 📝 Classification Report")
+                report = classification_report(
+                    y_test, 
+                    selected_result['predictions'],
+                    target_names=['No Job', 'Got Job'],
+                    output_dict=True
+                )
+                report_df = pd.DataFrame(report).transpose()
+                st.dataframe(report_df, use_container_width=True)
+            
+            # Feature Importance
+            st.markdown("### ⭐ Feature Importance Analysis")
+            importance_fig = create_feature_importance(
+                selected_model,
+                st.session_state.feature_names,
+                model_choice
             )
+            st.plotly_chart(importance_fig, use_container_width=True)
             
-            survivors_served = st.number_input(
-                "Survivors Served (Annual)",
-                min_value=10,
-                max_value=200,
-                value=40,
-                step=5
+            # Model Interpretation
+            st.markdown("### 💡 Model Interpretation & Insights")
+            interpretation = interpret_model(
+                selected_model,
+                st.session_state.feature_names,
+                model_choice
             )
+            st.markdown(interpretation)
             
-            avg_wage_increase = st.slider(
-                "Avg Wage Increase ($/hr)",
-                min_value=5,
-                max_value=20,
-                value=12,
-                help="From baseline to post-program"
-            )
+            # Additional insights
+            st.markdown("### 🎯 Actionable Recommendations")
             
-            completion_rate = st.slider(
-                "Completion Rate (%)",
-                min_value=50,
-                max_value=90,
-                value=72
-            ) / 100
-            
-            years_projection = st.slider(
-                "Projection Period (years)",
-                1, 10, 5
-            )
-        
-        with col2:
-            st.subheader("ROI Analysis")
-            
-            # Calculations
-            successful_grads = int(survivors_served * completion_rate)
-            annual_earnings_increase = successful_grads * avg_wage_increase * 2080
-            cumulative_impact = annual_earnings_increase * years_projection
-            
-            roi = (cumulative_impact / investment_amount) - 1
-            breakeven_years = investment_amount / annual_earnings_increase if annual_earnings_increase > 0 else float('inf')
-            
-            # Display metrics
-            st.metric("Annual Graduates", successful_grads)
-            st.metric("Annual Economic Impact", f"${annual_earnings_increase:,.0f}")
-            st.metric(f"{years_projection}-Year Cumulative Impact", f"${cumulative_impact:,.0f}")
-            st.metric("ROI", f"{roi*100:,.1f}%", 
-                     delta="Direct economic return" if roi > 0 else "")
-            st.metric("Break-Even Period", f"{breakeven_years:.1f} years")
-            
-            # Social ROI
-            st.markdown("---")
-            st.markdown("**Social Impact Multipliers:**")
-            
-            children_impacted = successful_grads * 2.3  # Avg children per survivor
-            st.metric("Children Positively Impacted", f"{int(children_impacted)}")
-            
-            evictions_prevented = int(successful_grads * 0.4)  # Est 40% would face eviction
-            st.metric("Evictions Prevented", evictions_prevented)
-            
-            public_assistance_reduction = successful_grads * 300 * 12  # Est $300/mo reduction
-            st.metric("Annual Public Assistance Savings", f"${public_assistance_reduction:,.0f}")
-        
-        # Visualization
-        st.subheader("Financial Projection")
-        
-        years = list(range(1, years_projection + 1))
-        cumulative_investment = [investment_amount] * years_projection
-        cumulative_returns = [annual_earnings_increase * y for y in years]
-        
-        fig = go.Figure()
-        
-        fig.add_trace(go.Bar(
-            x=years,
-            y=cumulative_investment,
-            name='Investment',
-            marker_color='rgb(255, 99, 71)'
-        ))
-        
-        fig.add_trace(go.Bar(
-            x=years,
-            y=cumulative_returns,
-            name='Cumulative Returns',
-            marker_color='rgb(50, 205, 50)'
-        ))
-        
-        fig.update_layout(
-            title='Investment vs Returns Over Time',
-            xaxis_title='Year',
-            yaxis_title='Amount ($)',
-            barmode='group',
-            height=400
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
+            if model_choice == 'Logistic Regression':
+                coefs = selected_model.coef_[0]
+                feature_names = st.session_state.feature_names
+                
+                # Top positive features
+                top_positive_idx = np.argsort(coefs)[-3:][::-1]
+                
+                st.markdown("**To improve job placement outcomes, prioritize:**")
+                for idx in top_positive_idx:
+                    if coefs[idx] > 0:
+                        st.markdown(f"✅ **{feature_names[idx]}** - Strong positive impact")
+                
+                # Top negative features
+                top_negative_idx = np.argsort(coefs)[:3]
+                
+                st.markdown("\n**Factors that may require additional support:**")
+                for idx in top_negative_idx:
+                    if coefs[idx] < 0:
+                        st.markdown(f"⚠️ **{feature_names[idx]}** - May indicate need for intervention")
     
-    # ========================================================================
-    # PAGE 7: 3-YEAR PROJECTIONS
-    # ========================================================================
-    
-    elif page == "🔮 3-Year Projections":
-        st.header("Comprehensive 3-Year Growth Model")
-        
-        st.markdown("""
-        Detailed year-by-year projections for OHFF expansion with realistic growth assumptions.
-        """)
-        
-        # Projection data
-        projection = pd.DataFrame({
-            'Metric': ['Office Locations', 'Staff Members', 'Survivors Served', 
-                      'Average Hourly Wage', 'Completion Rate', 'Annual Budget',
-                      'Private Donors %', 'Institutional Grants %'],
-            'Current': [1, 4, 12, '$22', '69%', '$150k', '70%', '30%'],
-            'Year 1': [2, 8, 28, '$25', '72%', '$400k', '60%', '40%'],
-            'Year 2': [3, 14, 50, '$28', '75%', '$750k', '50%', '50%'],
-            'Year 3': [4, 22, 75, '$32', '78%', '$1.2M', '40%', '60%']
-        })
-        
-        st.dataframe(projection, use_container_width=True, height=350)
-        
-        # Growth trajectory
-        st.subheader("Growth Trajectory Visualization")
-        
-        fig = make_subplots(
-            rows=2, cols=2,
-            subplot_titles=('Survivors Served', 'Average Wage', 'Staff Growth', 'Budget Growth')
-        )
-        
-        periods = ['Current', 'Year 1', 'Year 2', 'Year 3']
-        survivors = [12, 28, 50, 75]
-        wages = [22, 25, 28, 32]
-        staff = [4, 8, 14, 22]
-        budget = [150, 400, 750, 1200]
-        
-        fig.add_trace(go.Scatter(x=periods, y=survivors, mode='lines+markers', 
-                                name='Survivors', line=dict(color='#1f77b4', width=3)),
-                     row=1, col=1)
-        
-        fig.add_trace(go.Scatter(x=periods, y=wages, mode='lines+markers',
-                                name='Wage', line=dict(color='#2ca02c', width=3)),
-                     row=1, col=2)
-        
-        fig.add_trace(go.Scatter(x=periods, y=staff, mode='lines+markers',
-                                name='Staff', line=dict(color='#ff7f0e', width=3)),
-                     row=2, col=1)
-        
-        fig.add_trace(go.Scatter(x=periods, y=budget, mode='lines+markers',
-                                name='Budget', line=dict(color='#d62728', width=3)),
-                     row=2, col=2)
-        
-        fig.update_layout(height=600, showlegend=False)
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Impact summary
-        st.subheader("Cumulative 3-Year Impact")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            total_served = sum(survivors[1:])  # Exclude current
-            st.metric("Total Survivors Served", total_served)
-            st.metric("Lives Directly Impacted", total_served * 3.3, 
-                     help="Survivor + average 2.3 children")
-        
-        with col2:
-            total_investment = sum(budget[1:])
-            wage_increase = 15  # From $15 baseline to $32
-            economic_impact = total_served * wage_increase * 2080
-            st.metric("Total Investment", f"${total_investment}k")
-            st.metric("Economic Impact", f"${economic_impact/1000:.0f}k")
-        
-        with col3:
-            roi = (economic_impact / (total_investment * 1000)) - 1
-            st.metric("3-Year ROI", f"{roi*100:.0f}%")
-            st.metric("Social Impact", "Immeasurable", 
-                     help="Generational transformation")
-        
-        # Final recommendations
-        st.markdown("---")
-        st.markdown("""
-        <div class="success-box">
-        <h3>🎯 Strategic Implementation Roadmap</h3>
-        
-        <b>Phase 1 (Months 1-6): Foundation</b><br>
-        • Secure Year 1 funding ($400k)<br>
-        • Hire 4 additional staff<br>
-        • Identify Bronx office location<br>
-        • Build employer partnerships (3-5 companies)<br>
-        
-        <b>Phase 2 (Months 7-18): Bronx Expansion</b><br>
-        • Open Bronx hub in University Heights<br>
-        • Increase cohort size to 25-30/year<br>
-        • Launch housing navigation program<br>
-        • Establish legal aid partnerships<br>
-        
-        <b>Phase 3 (Months 19-30): Brooklyn Launch</b><br>
-        • Open Brooklyn satellite (East Flatbush)<br>
-        • Serve 50 survivors annually<br>
-        • Implement mentorship program<br>
-        • Diversify funding (50/50 donors/grants)<br>
-        
-        <b>Phase 4 (Months 31-36): Citywide Scale</b><br>
-        • Virtual services for Queens/Staten Island<br>
-        • Serve 75+ survivors annually<br>
-        • Achieve financial sustainability<br>
-        • Document model for replication<br>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Download projection
-        csv = projection.to_csv(index=False)
-        st.download_button(
-            "📥 Download 3-Year Projection",
-            csv,
-            "ohff_3year_projection.csv",
-            "text/csv"
-        )
-    
-    # ========================================================================
-    # ADDITIONAL PAGES (Geographic, Scalability)
-    # ========================================================================
-    
-    elif page == "🗺️ Geographic Intelligence":
-        st.header("Geographic Intelligence & Service Coverage")
-        
-        st.markdown("""
-        Map-based analysis of service coverage and expansion opportunities.
-        """)
-        
-        # Borough-level map simulation
-        borough_data = master_data.groupby('Borough').agg({
-            'need_score': 'mean',
-            'eviction_rate': 'mean',
-            'fips': 'count'
-        }).reset_index()
-        
-        fig = px.bar(
-            borough_data,
-            x='Borough',
-            y='need_score',
-            color='eviction_rate',
-            title='Service Need by Borough',
-            color_continuous_scale='Reds',
-            height=500
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        
-        st.markdown("""
-        ### Expansion Strategy
-        
-        **Phase 1: Bronx (Priority #1)**
-        - Location: University Heights/Fordham
-        - Target: 20-25 survivors/year
-        - Rationale: Highest eviction rate (105.8), largest concentration of need
-        
-        **Phase 2: Brooklyn**
-        - Location: East Flatbush
-        - Target: 15-20 survivors/year
-        - Rationale: Second-highest crisis indicators, large population
-        
-        **Phase 3: Virtual Citywide**
-        - Reach: Queens & Staten Island
-        - Target: 10-15 survivors/year
-        - Rationale: Cost-effective for lower-density areas
-        """)
-    
-    elif page == "💼 Scalability Model":
-        st.header("Program Scalability Analysis")
-        
-        scale_factor = st.slider("Scale Factor", 1, 10, 3)
-        
-        capacity_model = calculate_service_capacity_model(12, scale_factor)
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("Capacity Analysis")
-            st.metric("Survivors Served", capacity_model['capacity'])
-            st.metric("Cost per Survivor", f"${capacity_model['cost_per_survivor']:,.0f}")
-            st.metric("Total Annual Budget", f"${capacity_model['total_cost']:,.0f}")
-        
-        with col2:
-            st.subheader("Efficiency Gains")
-            st.metric("Efficiency Improvement", f"{capacity_model['efficiency_gain_pct']:.1f}%")
-            st.markdown(f"""
-            **Economies of Scale:**
-            - Shared administrative costs
-            - Bulk training discounts
-            - Network effects (mentorship)
-            - Stronger employer partnerships
-            """)
-    
-    # Footer
-    st.markdown("---")
-    st.markdown("""
-    <div style='text-align: center; color: #64748b; padding: 2rem;'>
-    <b>OHFF Strategic Intelligence Platform</b><br>
-    Powered by AI & Advanced Analytics | Built for JPMorgan Chase Hackathon 2025<br>
-    Data-Driven Solutions for Domestic Violence Survivor Support
-    </div>
-    """, unsafe_allow_html=True)
+    # Tab 5: Make Predictions
+    with tab5:
+        if not st.session_state.model_trained:
+            st.info("👈 Please train models first from the Model Training tab")
+        else:
+            st.markdown("## 🎯 Individual Predictions")
+            
+            st.markdown("### Enter Participant Information")
+            
+            feature_names = st.session_state.feature_names
+            
+            # Create input form
+            col1, col2, col3 = st.columns(3)
+            
+            input_data = {}
+            
+            for idx, feature in enumerate(feature_names):
+                col_idx = idx % 3
+                with [col1, col2, col3][col_idx]:
+                    if 'Children' in feature:
+                        input_data[feature] = st.number_input(
+                            feature.replace('_', ' '),
+                            min_value=0,
+                            max_value=10,
+                            value=0,
+                            step=1
+                        )
+                    else:
+                        input_data[feature] = st.selectbox(
+                            feature.replace('_', ' '),
+                            [0, 1],
+                            format_func=lambda x: 'Yes' if x == 1 else 'No'
+                        )
+            
+            if st.button("🔮 Predict Job Placement Probability", type="primary"):
+                # Prepare input
+                input_array = np.array([input_data[f] for f in feature_names]).reshape(1, -1)
+                input_scaled = st.session_state.scaler.transform(input_array)
+                
+                # Get predictions from all models
+                st.markdown("### 📊 Prediction Results")
+                
+                predictions = {}
+                for name, model in st.session_state.models.items():
+                    prob = model.predict_proba(input_scaled)[0][1]
+                    predictions[name] = prob
+                
+                # Display gauge charts
+                cols = st.columns(3)
+                
+                for idx, (name, prob) in enumerate(predictions.items()):
+                    with cols[idx]:
+                        fig = go.Figure(go.Indicator(
+                            mode="gauge+number+delta",
+                            value=prob * 100,
+                            domain={'x': [0, 1], 'y': [0, 1]},
+                            title={'text': name},
+                            delta={'reference': 50},
+                            gauge={
+                                'axis': {'range': [None, 100]},
+                                'bar': {'color': "darkblue"},
+                                'steps': [
+                                    {'range': [0, 30], 'color': "lightcoral"},
+                                    {'range': [30, 70], 'color': "lightyellow"},
+                                    {'range': [70, 100], 'color': "lightgreen"}
+                                ],
+                                'threshold': {
+                                    'line': {'color': "red", 'width': 4},
+                                    'thickness': 0.75,
+                                    'value': threshold * 100
+                                }
+                            }
+                        ))
+                        
+                        fig.update_layout(height=300)
+                        st.plotly_chart(fig, use_container_width=True)
+                
+                # Ensemble prediction
+                ensemble_prob = np.mean(list(predictions.values()))
+                
+                st.markdown("### 🎯 Ensemble Prediction")
+                
+                if ensemble_prob >= threshold:
+                    st.success(f"✅ **HIGH PROBABILITY** of job placement: {ensemble_prob:.1%}")
+                else:
+                    st.warning(f"⚠️ **LOW PROBABILITY** of job placement: {ensemble_prob:.1%}")
+                
+                st.markdown(f"**Recommendation:** {'Strong candidate for placement' if ensemble_prob >= threshold else 'May benefit from additional training/support'}")
+                
+                # Feature contribution (for Logistic Regression)
+                st.markdown("### 📈 Feature Contribution Analysis")
+                
+                log_reg = st.session_state.models['Logistic Regression']
+                coefs = log_reg.coef_[0]
+                
+                contributions = input_array[0] * coefs
+                
+                fig = go.Figure(go.Bar(
+                    x=contributions,
+                    y=feature_names,
+                    orientation='h',
+                    marker=dict(
+                        color=contributions,
+                        colorscale='RdYlGn',
+                        showscale=True
+                    )
+                ))
+                
+                fig.update_layout(
+                    title='How Each Feature Contributes to Prediction',
+                    xaxis_title='Contribution',
+                    height=600
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
 
 if __name__ == "__main__":
     main()
